@@ -62,10 +62,12 @@ The icon in front of the name shows what the terminal is doing:
 - **nothing** – a shell sitting at its prompt
 - **spinning ring** – a program is working (producing output)
 - **blue dot** – the program has gone quiet or rang the bell: it is waiting for
-  you. The dot pulses and the name is bold while that terminal is in the
-  background; clicking it clears the highlight.
-- **hollow ring** – a program finished and dropped back to the shell while the
-  terminal was in the background.
+  you. The dot pulses and the name is bold until you have read the output:
+  the terminal is selected, the window has focus, and you have scrolled to
+  the end. Clicking a terminal that is already at the end clears it at once;
+  one you have scrolled up in keeps the dot until you reach the bottom.
+- **hollow ring** – a program finished and dropped back to the shell while you
+  were not looking.
 
 **Ordering.** The small label in the sidebar header toggles between two
 orders (also ⌘⇧A):

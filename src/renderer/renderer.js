@@ -90,6 +90,32 @@
 
   const byId = (id) => terminals.find((t) => t.id === id);
 
+  // ---------- Attention (the notification dot) ----------
+  //
+  // A terminal asks for attention when something happens that the user has not
+  // seen. "Seen" means the terminal is the active one, the window has focus, and
+  // its viewport is scrolled to the end of the output. The dot stays until all
+  // three hold, so clicking a terminal and then reading down to the bottom is
+  // what clears it, not the click alone.
+
+  const atBottom = (s) => {
+    const b = s.term.buffer.active;
+    return b.viewportY >= b.baseY;
+  };
+  const isRead = (s) => s.id === activeId && document.hasFocus() && atBottom(s);
+
+  function markAttention(s) {
+    if (!isRead(s)) s.attention = true;
+  }
+
+  function clearIfRead(s) {
+    if (!s || !s.attention || !isRead(s)) return;
+    s.attention = false;
+    renderItem(s);
+  }
+
+  window.addEventListener('focus', () => clearIfRead(byId(activeId)));
+
   // ---------- Ordering ----------
 
   // Rank for "attention first": terminals that want you, then working ones,
@@ -221,9 +247,11 @@
     // Claude Code rings the bell when it finishes and wants you back.
     term.onBell(() => {
       setState(session, 'waiting');
-      if (session.id !== activeId) session.attention = true;
+      markAttention(session);
       renderItem(session);
     });
+    // Scrolling to the end of the output counts as having read it.
+    term.onScroll(() => clearIfRead(session));
     term.onTitleChange((title) => {
       // Shells / programs that set the window title (e.g. "claude") show it as subtitle.
       if (title && title.trim()) {
@@ -368,7 +396,7 @@
     } else sub = prettyPath(s.cwd);
     s.subEl.textContent = sub;
     li.classList.toggle('active', s.id === activeId);
-    li.classList.toggle('attention', s.attention && s.id !== activeId);
+    li.classList.toggle('attention', !!s.attention);
     li.classList.toggle('exited', s.exited);
     for (const st of ['idle', 'running', 'waiting']) li.classList.toggle(`state-${st}`, s.state === st);
     if (sortMode === 'attention') layoutList();
@@ -424,12 +452,12 @@
     for (const t of terminals) {
       t.el.classList.toggle('visible', t.id === id);
     }
-    s.attention = false;
     for (const t of terminals) renderItem(t);
     updateTitle();
     requestAnimationFrame(() => {
       fitActive();
       s.term.focus();
+      clearIfRead(s); // already at the end: nothing left to read
     });
   }
 
@@ -520,7 +548,7 @@
     clearTimeout(s.settleTimer);
     s.settleTimer = setTimeout(() => {
       if (!isProgram(s)) return setState(s, 'idle');
-      if (s.id !== activeId) s.attention = true;
+      markAttention(s);
       setState(s, 'waiting');
       renderItem(s);
     }, QUIET_MS);
@@ -529,7 +557,7 @@
   api.onPtyData((id, data) => {
     const s = byId(id);
     if (!s) return;
-    s.term.write(data);
+    s.term.write(data, () => clearIfRead(s));
     noteOutput(s);
   });
 
@@ -564,8 +592,8 @@
     if (SHELL_NAMES.has(name)) {
       s.title = null;
       clearTimeout(s.settleTimer);
-      // A program just finished in the background: worth a look.
-      if (wasProgram && id !== activeId) s.attention = true;
+      // A program just finished while you were not looking: worth a look.
+      if (wasProgram) markAttention(s);
       s.state = 'idle';
     } else if (!wasProgram) {
       noteOutput(s); // a program just started
