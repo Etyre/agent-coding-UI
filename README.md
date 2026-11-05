@@ -71,13 +71,14 @@ The icon in front of the name shows what the terminal is doing:
 
 - **nothing** – a shell sitting at its prompt
 - **spinning ring** – a program is working (producing output)
-- **blue dot** – the program has gone quiet or rang the bell: it is waiting for
-  you. The dot pulses and the name is bold until you have read the output:
-  the terminal is selected, the window has focus, and you have scrolled to
-  the end. Clicking a terminal that is already at the end clears it at once;
-  one you have scrolled up in keeps the dot until you reach the bottom. A
-  program going quiet only earns the dot if some of its output arrived while
-  you were not looking; output you watched arrive is not news.
+- **pulsing blue dot** – the program has gone quiet or rang the bell, and
+  there is output you have not seen: it is waiting for you. The dot and the
+  bold name stay until you have read the output: the terminal is selected,
+  the window has focus, and you have scrolled to the end. Clicking a terminal
+  that is already at the end clears it at once; one you have scrolled up in
+  keeps the dot until you reach the bottom. Once read, the terminal shows no
+  icon again until the program produces more output. Output you watched
+  arrive is not news, so a program going quiet after that earns no dot.
 - **hollow ring** – a program finished and dropped back to the shell while you
   were not looking.
 

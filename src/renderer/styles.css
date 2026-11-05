@@ -128,9 +128,9 @@ html, body {
 #terminal-list li:hover { background: var(--hover); }
 #terminal-list li.active { background: var(--active); }
 
-/* Status icon: hidden for an idle shell, a spinning ring while a program is
-   working, a solid dot (pulsing when in the background) when it is waiting
-   for input. */
+/* Status icon: hidden for an idle shell or a program whose output has been
+   read, a spinning ring while a program is working, a pulsing dot when it is
+   waiting for input and there is output you have not seen. */
 #terminal-list .status {
   width: 8px;
   height: 8px;
@@ -148,7 +148,6 @@ html, body {
   border-top-color: var(--dot);
   animation: status-spin 0.9s linear infinite;
 }
-#terminal-list li.state-waiting .status { opacity: 0.55; }
 #terminal-list li.state-waiting.attention .status {
   opacity: 1;
   animation: status-pulse 1.6s ease-in-out infinite;

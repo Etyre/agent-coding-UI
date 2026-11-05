@@ -508,7 +508,7 @@
     li.classList.toggle('exited', s.exited);
     for (const st of ['idle', 'running', 'waiting']) li.classList.toggle(`state-${st}`, s.state === st);
     if (sortMode === 'attention') layoutList();
-    s.statusEl.title = s.exited ? 'Exited' : s.state === 'running' ? 'Working' : s.state === 'waiting' ? 'Waiting for your input' : '';
+    s.statusEl.title = s.exited ? 'Exited' : s.state === 'running' ? 'Working' : s.attention ? 'Waiting for you: unread output' : '';
   }
 
   function startRename(s) {
