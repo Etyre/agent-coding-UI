@@ -1,0 +1,813 @@
+/* global Terminal, FitAddon, WebLinksAddon */
+(() => {
+  const api = window.api;
+
+  const THEMES = {
+    light: {
+      background: '#ffffff',
+      foreground: '#2b2b2b',
+      cursor: '#2b2b2b',
+      cursorAccent: '#ffffff',
+      selectionBackground: 'rgba(74, 124, 247, 0.25)',
+      black: '#000000',
+      red: '#c91b00',
+      green: '#00a600',
+      yellow: '#b48b00',
+      blue: '#2a5bd7',
+      magenta: '#a627a4',
+      cyan: '#0e7490',
+      white: '#bfbfbf',
+      brightBlack: '#666666',
+      brightRed: '#e5473b',
+      brightGreen: '#2bb84a',
+      brightYellow: '#c9a000',
+      brightBlue: '#4a7cf7',
+      brightMagenta: '#c84fcd',
+      brightCyan: '#1aa7bd',
+      brightWhite: '#e5e5e5',
+    },
+    dark: {
+      background: '#1e1e1e',
+      foreground: '#d4d4d4',
+      cursor: '#d4d4d4',
+      cursorAccent: '#1e1e1e',
+      selectionBackground: 'rgba(108, 156, 255, 0.3)',
+      black: '#000000',
+      red: '#f14c4c',
+      green: '#23d18b',
+      yellow: '#f5f543',
+      blue: '#3b8eea',
+      magenta: '#d670d6',
+      cyan: '#29b8db',
+      white: '#e5e5e5',
+      brightBlack: '#666666',
+      brightRed: '#f14c4c',
+      brightGreen: '#23d18b',
+      brightYellow: '#f5f543',
+      brightBlue: '#3b8eea',
+      brightMagenta: '#d670d6',
+      brightCyan: '#29b8db',
+      brightWhite: '#ffffff',
+    },
+  };
+
+  const SHELL_NAMES = new Set(['zsh', 'bash', 'fish', 'sh', '-zsh', '-bash', 'login']);
+
+  // ---------- State ----------
+
+  const terminals = []; // ordered list of session objects
+  let activeId = null;
+  let fontSize = Number(localStorage.getItem('fontSize')) || 13;
+  let defaultCwd = null;
+  // Sidebar order: 'manual' (drag to reorder) or 'attention' (needs-you first).
+  let sortMode = localStorage.getItem('sortMode') === 'attention' ? 'attention' : 'manual';
+
+  const $ = (sel) => document.querySelector(sel);
+  const sidebar = $('#sidebar');
+  const list = $('#terminal-list');
+  const container = $('#terminals');
+  const emptyState = $('#empty-state');
+  const titleName = $('#title-name');
+  const titleCwd = $('#title-cwd');
+
+  const darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
+  const currentTheme = () => (darkQuery.matches ? THEMES.dark : THEMES.light);
+
+  const home = () => defaultCwd ? defaultCwd.replace(/\/Documents\/agent-coding$/, '') : null;
+  function prettyPath(p) {
+    const h = home();
+    if (h && p.startsWith(h)) return '~' + p.slice(h.length);
+    return p;
+  }
+
+  function uniqueName(base, except = null) {
+    const taken = new Set(terminals.filter((t) => t !== except).map((t) => t.name));
+    if (!taken.has(base)) return base;
+    let n = 2;
+    while (taken.has(`${base} ${n}`)) n++;
+    return `${base} ${n}`;
+  }
+
+  const byId = (id) => terminals.find((t) => t.id === id);
+
+  // ---------- Ordering ----------
+
+  // Rank for "attention first": terminals that want you, then working ones,
+  // then idle shells. Ties keep the manual order.
+  function attentionRank(s) {
+    if (s.exited) return 4;
+    if (s.attention) return 0;
+    if (s.state === 'waiting') return 1;
+    if (s.state === 'running') return 2;
+    return 3;
+  }
+
+  // The order the sidebar shows (and that ⌘1…9 / next / previous follow).
+  function displayOrder() {
+    if (sortMode !== 'attention') return terminals.slice();
+    return terminals
+      .map((t, i) => [t, i])
+      .sort((a, b) => attentionRank(a[0]) - attentionRank(b[0]) || a[1] - b[1])
+      .map(([t]) => t);
+  }
+
+  // Re-append the <li>s in display order (cheap; the DOM only moves what changed).
+  function layoutList() {
+    const ordered = displayOrder();
+    ordered.forEach((t, i) => {
+      if (!t.li) return;
+      if (list.children[i] !== t.li) list.insertBefore(t.li, list.children[i] || null);
+      t.li.draggable = sortMode === 'manual';
+    });
+  }
+
+  function saveManualOrder() {
+    terminals.forEach((t, i) => api.setPtyMeta(t.id, { order: i }));
+  }
+
+  function moveTerminal(s, beforeTarget) {
+    const from = terminals.indexOf(s);
+    if (from === -1) return;
+    terminals.splice(from, 1);
+    const to = beforeTarget ? terminals.indexOf(beforeTarget) : terminals.length;
+    terminals.splice(to, 0, s);
+    saveManualOrder();
+    layoutList();
+  }
+
+  function setSortMode(mode) {
+    sortMode = mode;
+    localStorage.setItem('sortMode', mode);
+    const btn = $('#sort-toggle');
+    btn.textContent = mode === 'attention' ? 'attention first' : 'manual';
+    btn.classList.toggle('attention-first', mode === 'attention');
+    btn.title =
+      mode === 'attention'
+        ? 'Sort: terminals that need attention on top. Click for manual order (drag to reorder).'
+        : 'Sort: manual order (drag to reorder). Click to put terminals that need attention on top.';
+    layoutList();
+  }
+
+  // ---------- Terminal creation ----------
+
+  async function createTerminal(cwd) {
+    const probe = makeTerm();
+    const info = await api.createPty({ cwd, cols: probe.term.cols, rows: probe.term.rows });
+    const session = openSession(info, probe);
+    activate(session.id);
+    return session;
+  }
+
+  // Build an xterm instance in a fresh (temporarily visible) container so the
+  // fit addon can measure it.
+  function makeTerm() {
+    const el = document.createElement('div');
+    el.className = 'term-container';
+    container.appendChild(el);
+
+    const term = new Terminal({
+      fontFamily: getComputedStyle(document.documentElement).getPropertyValue('--font-mono').trim(),
+      fontSize,
+      lineHeight: 1.2,
+      cursorBlink: true,
+      cursorStyle: 'bar',
+      scrollback: 10000,
+      macOptionIsMeta: true,
+      allowProposedApi: true,
+      theme: currentTheme(),
+    });
+    const fit = new FitAddon.FitAddon();
+    term.loadAddon(fit);
+    term.loadAddon(new WebLinksAddon.WebLinksAddon((_e, uri) => api.openExternal(uri)));
+
+    // Temporarily show so fit can measure, then hide if not active.
+    el.classList.add('visible');
+    term.open(el);
+    fit.fit();
+    return { term, fit, el };
+  }
+
+  // Wire up the UI for a terminal that exists in the host: either one we just
+  // created, or one we are reattaching to after a reload / relaunch.
+  function openSession(info, { term, fit, el }, scrollback = '') {
+    const { id, cwd: realCwd, shell, project, meta = {} } = info;
+    const renamed = !!meta.renamed;
+
+    const session = {
+      id,
+      name: renamed && meta.name ? uniqueName(meta.name) : uniqueName(project || realCwd.split('/').filter(Boolean).pop() || realCwd),
+      renamed, // true once the user picks a name by hand; auto-naming then stops
+      cwd: realCwd,
+      process: info.process || shell,
+      term,
+      fit,
+      el,
+      li: null,
+      exited: false,
+      // Activity state shown in the sidebar:
+      //   idle    – a shell sitting at its prompt
+      //   running – a program is producing output
+      //   waiting – a program went quiet (or rang the bell): it wants input
+      state: 'idle',
+      attention: false, // state changed while this terminal was in the background
+      settleTimer: null,
+      ignoreOutputUntil: 0,
+    };
+    terminals.push(session);
+
+    term.onData((data) => api.writePty(id, data));
+    term.onBinary((data) => api.writePty(id, data));
+    term.onResize(({ cols, rows }) => api.resizePty(id, cols, rows));
+    // Claude Code rings the bell when it finishes and wants you back.
+    term.onBell(() => {
+      setState(session, 'waiting');
+      if (session.id !== activeId) session.attention = true;
+      renderItem(session);
+    });
+    term.onTitleChange((title) => {
+      // Shells / programs that set the window title (e.g. "claude") show it as subtitle.
+      if (title && title.trim()) {
+        session.title = title.trim();
+        renderItem(session);
+      }
+    });
+
+    // Keep ⌘-shortcuts out of the terminal; the app menu handles them.
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.metaKey && !e.ctrlKey && !e.altKey) return false;
+      return true;
+    });
+
+    session.li = buildItem(session);
+    list.appendChild(session.li);
+    layoutList();
+    if (!scrollback) api.setPtyMeta(id, { order: terminals.length - 1 });
+
+    if (scrollback) {
+      // Replay what the host buffered, then poke the foreground program so a
+      // full-screen app (like Claude Code) repaints itself for the new size.
+      term.write(scrollback, () => {
+        try {
+          fit.fit();
+        } catch (_) {}
+        api.resizePty(id, term.cols, term.rows, true);
+        term.scrollToBottom();
+      });
+    }
+    return session;
+  }
+
+  // Reconnect to the terminals the host kept alive across a reload / relaunch.
+  async function attachExisting() {
+    const existing = await api.listPtys();
+    if (!existing || !existing.length) return false;
+    const orderOf = (x) => (x.meta && Number.isFinite(x.meta.order) ? x.meta.order : Number.MAX_SAFE_INTEGER);
+    existing.sort((a, b) => orderOf(a) - orderOf(b) || a.id - b.id);
+    for (const info of existing) {
+      const parts = makeTerm();
+      openSession(info, parts, info.scrollback || '');
+    }
+    const remembered = Number(sessionStorage.getItem('activeId'));
+    const target = byId(remembered) || terminals[0];
+    activate(target.id);
+    return true;
+  }
+
+  // ---------- Sidebar items ----------
+
+  let dragging = null; // session being dragged for reordering
+  const clearDropMarkers = () => list.querySelectorAll('.drop-before, .drop-after').forEach((el) => el.classList.remove('drop-before', 'drop-after'));
+
+  function buildItem(s) {
+    const li = document.createElement('li');
+    li.dataset.id = s.id;
+
+    const dot = document.createElement('span');
+    dot.className = 'status';
+    dot.title = '';
+
+    const label = document.createElement('div');
+    label.className = 'label';
+    const name = document.createElement('div');
+    name.className = 'name';
+    const sub = document.createElement('div');
+    sub.className = 'sub';
+    label.append(name, sub);
+
+    const close = document.createElement('button');
+    close.className = 'close';
+    close.title = 'Close terminal (⌘W)';
+    close.textContent = '×';
+
+    li.append(dot, label, close);
+
+    li.addEventListener('click', (e) => {
+      if (e.target === close) return;
+      activate(s.id);
+    });
+    name.addEventListener('dblclick', (e) => {
+      e.stopPropagation();
+      startRename(s);
+    });
+    close.addEventListener('click', (e) => {
+      e.stopPropagation();
+      closeTerminal(s.id);
+    });
+
+    // Manual reordering by dragging items.
+    li.draggable = sortMode === 'manual';
+    li.addEventListener('dragstart', (e) => {
+      if (sortMode !== 'manual') return e.preventDefault();
+      dragging = s;
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/x-terminal-id', String(s.id));
+      li.classList.add('dragging');
+    });
+    li.addEventListener('dragend', () => {
+      dragging = null;
+      li.classList.remove('dragging');
+      clearDropMarkers();
+    });
+    li.addEventListener('dragover', (e) => {
+      if (!dragging || dragging === s) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      const r = li.getBoundingClientRect();
+      const before = e.clientY < r.top + r.height / 2;
+      clearDropMarkers();
+      li.classList.add(before ? 'drop-before' : 'drop-after');
+    });
+    li.addEventListener('drop', (e) => {
+      if (!dragging || dragging === s) return;
+      e.preventDefault();
+      const r = li.getBoundingClientRect();
+      const before = e.clientY < r.top + r.height / 2;
+      const moved = dragging;
+      const target = before ? s : terminals[terminals.indexOf(s) + 1] || null;
+      clearDropMarkers();
+      moveTerminal(moved, target);
+    });
+
+    s.nameEl = name;
+    s.subEl = sub;
+    s.statusEl = dot;
+    renderItem(s, li);
+    return li;
+  }
+
+  function renderItem(s, li = s.li) {
+    if (!li) return;
+    s.nameEl.textContent = s.name;
+    const proc = s.process || '';
+    let sub;
+    if (s.exited) sub = 'exited';
+    else if (proc && !SHELL_NAMES.has(proc)) {
+      sub = s.title && s.title !== proc ? `${proc} · ${s.title}` : proc;
+      if (s.state === 'waiting') sub += ' · waiting for you';
+      else if (s.state === 'running') sub += ' · working';
+    } else sub = prettyPath(s.cwd);
+    s.subEl.textContent = sub;
+    li.classList.toggle('active', s.id === activeId);
+    li.classList.toggle('attention', s.attention && s.id !== activeId);
+    li.classList.toggle('exited', s.exited);
+    for (const st of ['idle', 'running', 'waiting']) li.classList.toggle(`state-${st}`, s.state === st);
+    if (sortMode === 'attention') layoutList();
+    s.statusEl.title = s.exited ? 'Exited' : s.state === 'running' ? 'Working' : s.state === 'waiting' ? 'Waiting for your input' : '';
+  }
+
+  function startRename(s) {
+    if (!s.nameEl || s.nameEl.querySelector('input')) return;
+    const input = document.createElement('input');
+    input.className = 'name-input';
+    input.value = s.name;
+    s.nameEl.textContent = '';
+    s.nameEl.appendChild(input);
+    input.focus();
+    input.select();
+
+    const finish = (commit) => {
+      if (!input.isConnected) return;
+      const v = input.value.trim();
+      if (commit && v && v !== s.name) {
+        s.name = v;
+        s.renamed = true;
+        api.setPtyMeta(s.id, { name: v, renamed: true });
+      }
+      input.remove();
+      renderItem(s);
+      updateTitle();
+      focusActive();
+    };
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') finish(true);
+      else if (e.key === 'Escape') finish(false);
+      e.stopPropagation();
+    });
+    input.addEventListener('blur', () => finish(true));
+  }
+
+  // ---------- Activation / layout ----------
+
+  function activate(id) {
+    const s = byId(id);
+    if (!s) return;
+    const previous = byId(activeId);
+    if (previous && previous !== s) {
+      // Programs with focus reporting on (Claude Code does this) repaint a few
+      // bytes when the terminal loses focus. That is not real activity.
+      previous.ignoreOutputUntil = Date.now() + 600;
+    }
+    activeId = id;
+    try {
+      sessionStorage.setItem('activeId', String(id));
+    } catch (_) {}
+    for (const t of terminals) {
+      t.el.classList.toggle('visible', t.id === id);
+    }
+    s.attention = false;
+    for (const t of terminals) renderItem(t);
+    updateTitle();
+    requestAnimationFrame(() => {
+      fitActive();
+      s.term.focus();
+    });
+  }
+
+  function fitActive() {
+    const s = byId(activeId);
+    if (!s) return;
+    try {
+      s.fit.fit();
+    } catch (_) {}
+  }
+
+  function focusActive() {
+    const s = byId(activeId);
+    if (s) s.term.focus();
+  }
+
+  function updateTitle() {
+    const s = byId(activeId);
+    emptyState.classList.toggle('visible', terminals.length === 0);
+    if (!s) {
+      titleName.textContent = '';
+      titleCwd.textContent = '';
+      document.title = 'Agent Coding';
+      return;
+    }
+    titleName.textContent = s.name;
+    titleCwd.textContent = prettyPath(s.cwd);
+    document.title = `${s.name} — Agent Coding`;
+  }
+
+  new ResizeObserver(() => fitActive()).observe(container);
+
+  // ---------- Closing ----------
+
+  async function closeTerminal(id) {
+    const s = byId(id);
+    if (!s) return;
+    const running = s.process && !SHELL_NAMES.has(s.process) && !s.exited;
+    if (running) {
+      const ok = await api.confirm(
+        `Close "${s.name}"?`,
+        `"${s.process}" is still running in this terminal and will be terminated.`
+      );
+      if (!ok) {
+        focusActive();
+        return;
+      }
+    }
+    removeSession(s, true);
+  }
+
+  function removeSession(s, kill) {
+    const idx = terminals.indexOf(s);
+    if (idx === -1) return;
+    if (kill) api.killPty(s.id);
+    clearTimeout(s.settleTimer);
+    terminals.splice(idx, 1);
+    s.term.dispose();
+    s.el.remove();
+    s.li.remove();
+    if (activeId === s.id) {
+      const next = terminals[Math.min(idx, terminals.length - 1)];
+      activeId = null;
+      if (next) activate(next.id);
+      else updateTitle();
+    }
+  }
+
+  // ---------- PTY events ----------
+
+  const QUIET_MS = 1500; // no output for this long = the program is waiting
+
+  const isProgram = (s) => s.process && !SHELL_NAMES.has(s.process) && !s.exited;
+
+  function setState(s, state) {
+    if (s.state === state) return;
+    s.state = state;
+    renderItem(s);
+  }
+
+  function noteOutput(s) {
+    if (Date.now() < s.ignoreOutputUntil) return;
+    if (!isProgram(s)) {
+      setState(s, 'idle');
+      return;
+    }
+    setState(s, 'running');
+    clearTimeout(s.settleTimer);
+    s.settleTimer = setTimeout(() => {
+      if (!isProgram(s)) return setState(s, 'idle');
+      if (s.id !== activeId) s.attention = true;
+      setState(s, 'waiting');
+      renderItem(s);
+    }, QUIET_MS);
+  }
+
+  api.onPtyData((id, data) => {
+    const s = byId(id);
+    if (!s) return;
+    s.term.write(data);
+    noteOutput(s);
+  });
+
+  api.onPtyExit((id, code) => {
+    const s = byId(id);
+    if (!s) return;
+    s.exited = true;
+    clearTimeout(s.settleTimer);
+    s.state = 'idle';
+    s.term.write(`\r\n\x1b[2m[process exited with code ${code}]\x1b[0m\r\n`);
+    renderItem(s);
+    // Close cleanly-exited shells automatically, like Terminal.app does.
+    if (code === 0) setTimeout(() => removeSession(s, false), 300);
+  });
+
+  // The shell changed directory: follow it in the sidebar unless the user
+  // renamed this terminal themselves.
+  api.onPtyCwd((id, cwd, project) => {
+    const s = byId(id);
+    if (!s) return;
+    s.cwd = cwd;
+    if (!s.renamed && project) s.name = uniqueName(project, s);
+    renderItem(s);
+    if (id === activeId) updateTitle();
+  });
+
+  api.onPtyProcess((id, name) => {
+    const s = byId(id);
+    if (!s) return;
+    const wasProgram = isProgram(s);
+    s.process = name;
+    if (SHELL_NAMES.has(name)) {
+      s.title = null;
+      clearTimeout(s.settleTimer);
+      // A program just finished in the background: worth a look.
+      if (wasProgram && id !== activeId) s.attention = true;
+      s.state = 'idle';
+    } else if (!wasProgram) {
+      noteOutput(s); // a program just started
+    }
+    renderItem(s);
+  });
+
+  // ---------- Theme / font ----------
+
+  function applyTheme() {
+    const theme = currentTheme();
+    for (const t of terminals) t.term.options.theme = theme;
+  }
+  darkQuery.addEventListener('change', applyTheme);
+  api.onThemeChanged(() => setTimeout(applyTheme, 50));
+
+  function setFontSize(delta) {
+    fontSize = delta === 0 ? 13 : Math.min(28, Math.max(9, fontSize + delta));
+    localStorage.setItem('fontSize', String(fontSize));
+    for (const t of terminals) t.term.options.fontSize = fontSize;
+    fitActive();
+  }
+
+  // ---------- Sidebar: toggle & resize ----------
+
+  function setSidebarCollapsed(collapsed) {
+    sidebar.style.setProperty('--sidebar-width', sidebar.offsetWidth + 'px');
+    sidebar.classList.toggle('collapsed', collapsed);
+    localStorage.setItem('sidebarCollapsed', collapsed ? '1' : '0');
+    setTimeout(fitActive, 200);
+  }
+  $('#toggle-sidebar').addEventListener('click', () => {
+    setSidebarCollapsed(!sidebar.classList.contains('collapsed'));
+    focusActive();
+  });
+  if (localStorage.getItem('sidebarCollapsed') === '1') {
+    sidebar.style.transition = 'none';
+    setSidebarCollapsed(true);
+    requestAnimationFrame(() => (sidebar.style.transition = ''));
+  }
+  const savedWidth = Number(localStorage.getItem('sidebarWidth'));
+  if (savedWidth) sidebar.style.width = savedWidth + 'px';
+
+  (() => {
+    const resizer = $('#sidebar-resizer');
+    let startX = 0;
+    let startW = 0;
+    const onMove = (e) => {
+      const w = Math.min(480, Math.max(160, startW + (e.clientX - startX)));
+      sidebar.style.width = w + 'px';
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.style.cursor = '';
+      localStorage.setItem('sidebarWidth', String(sidebar.offsetWidth));
+      focusActive();
+    };
+    resizer.addEventListener('mousedown', (e) => {
+      startX = e.clientX;
+      startW = sidebar.offsetWidth;
+      document.body.style.cursor = 'col-resize';
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+      e.preventDefault();
+    });
+  })();
+
+  // ---------- Buttons & menu ----------
+
+  async function newTerminalInFolder() {
+    const folder = await api.pickFolder();
+    if (folder) createTerminal(folder);
+    else focusActive();
+  }
+
+  const newBtn = $('#new-terminal');
+  newBtn.addEventListener('click', () => createTerminal(defaultCwd));
+  newBtn.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    newTerminalInFolder();
+  });
+
+  const step = (dir) => {
+    if (terminals.length < 2) return;
+    const order = displayOrder();
+    const idx = order.findIndex((t) => t.id === activeId);
+    const next = order[(idx + dir + order.length) % order.length];
+    activate(next.id);
+  };
+
+  api.onMenu('new-terminal', () => createTerminal(defaultCwd));
+  api.onMenu('new-terminal-in-folder', newTerminalInFolder);
+  api.onMenu('close-terminal', () => activeId != null && closeTerminal(activeId));
+  api.onMenu('rename-terminal', () => {
+    const s = byId(activeId);
+    if (s) startRename(s);
+  });
+  api.onMenu('reveal-folder', () => {
+    const s = byId(activeId);
+    if (s) api.revealPath(s.cwd);
+  });
+  api.onMenu('toggle-sidebar', () => setSidebarCollapsed(!sidebar.classList.contains('collapsed')));
+  api.onMenu('next-terminal', () => step(1));
+  api.onMenu('prev-terminal', () => step(-1));
+  api.onMenu('select-index', (n) => {
+    const order = displayOrder();
+    const t = n === 9 ? order[order.length - 1] : order[n - 1];
+    if (t) activate(t.id);
+  });
+  api.onMenu('toggle-sort', () => setSortMode(sortMode === 'attention' ? 'manual' : 'attention'));
+  api.onMenu('font-size', (d) => setFontSize(d));
+  api.onMenu('clear-terminal', () => {
+    const s = byId(activeId);
+    if (s) s.term.clear();
+  });
+  api.onMenu('copy', async () => {
+    const s = byId(activeId);
+    if (!s) return;
+    const sel = s.term.getSelection();
+    if (sel) {
+      await navigator.clipboard.writeText(sel);
+      s.term.clearSelection();
+    } else {
+      api.writePty(s.id, '\x03'); // no selection: behave like Ctrl+C
+    }
+  });
+  api.onMenu('paste', () => {
+    const s = byId(activeId);
+    if (s) pasteClipboard(s);
+  });
+  api.onMenu('select-all', () => {
+    const s = byId(activeId);
+    if (s) s.term.selectAll();
+  });
+
+  // ---------- Images: paste & drag-and-drop ----------
+
+  // Escape a path the way Terminal.app / iTerm do when you drop a file, which
+  // is the form Claude Code expects when it looks for image paths in a prompt.
+  const shellEscape = (p) => p.replace(/[^A-Za-z0-9_\-./~]/g, (c) => '\\' + c);
+
+  function pastePaths(s, paths) {
+    if (!paths.length) return;
+    s.term.paste(paths.map(shellEscape).join(' ') + ' ');
+    s.term.focus();
+  }
+
+  // Programs that read the clipboard themselves when they receive Ctrl+V.
+  // Claude Code does this and turns a screenshot into a real image attachment.
+  const readsClipboardOnCtrlV = (s) => /claude|node/i.test(s.process || '');
+
+  async function pasteClipboard(s) {
+    const { text, hasImage } = await api.readClipboard();
+    if (text) {
+      s.term.paste(text);
+      return;
+    }
+    if (!hasImage) return;
+    if (readsClipboardOnCtrlV(s)) {
+      // Let Claude Code grab the image from the clipboard itself.
+      api.writePty(s.id, '\x16');
+      return;
+    }
+    // Plain shell: save the image and paste its path.
+    const file = await api.saveClipboardImage();
+    if (file) pastePaths(s, [file]);
+  }
+
+  async function filesToPaths(fileList) {
+    const paths = [];
+    for (const file of fileList) {
+      const p = api.pathForFile(file);
+      if (p) {
+        paths.push(p);
+        continue;
+      }
+      // No path on disk (e.g. an image dragged out of a browser): save it first.
+      try {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const saved = await api.saveTempFile(file.name || 'image.png', bytes);
+        if (saved) paths.push(saved);
+      } catch (_) {}
+    }
+    return paths;
+  }
+
+  (() => {
+    const main = $('#main');
+    let depth = 0;
+    const hasFiles = (e) => e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files');
+
+    main.addEventListener('dragenter', (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      depth++;
+      main.classList.add('drop-target');
+    });
+    main.addEventListener('dragover', (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+    });
+    main.addEventListener('dragleave', (e) => {
+      if (!hasFiles(e)) return;
+      depth = Math.max(0, depth - 1);
+      if (depth === 0) main.classList.remove('drop-target');
+    });
+    main.addEventListener('drop', async (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      depth = 0;
+      main.classList.remove('drop-target');
+      const s = byId(activeId);
+      if (!s) return;
+      const paths = await filesToPaths(Array.from(e.dataTransfer.files));
+      pastePaths(s, paths);
+    });
+  })();
+
+  $('#sort-toggle').addEventListener('click', () => {
+    setSortMode(sortMode === 'attention' ? 'manual' : 'attention');
+    focusActive();
+  });
+  setSortMode(sortMode);
+
+  // Clicking anywhere in the main pane refocuses the terminal.
+  $('#main').addEventListener('mousedown', (e) => {
+    if (e.target.closest('button')) return;
+    setTimeout(focusActive, 0);
+  });
+
+  // ---------- Boot ----------
+
+  api.onHostDisconnected(() => {
+    for (const t of terminals) t.term.write('\r\n\x1b[2m[terminal host disconnected]\x1b[0m\r\n');
+  });
+  api.onHostReconnected(() => location.reload());
+
+  (async () => {
+    defaultCwd = await api.defaultCwd();
+    const attached = await attachExisting();
+    if (!attached) await createTerminal(defaultCwd);
+  })();
+})();

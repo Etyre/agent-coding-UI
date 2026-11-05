@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:;" />
+  <title>Agent Coding</title>
+  <link rel="stylesheet" href="../../node_modules/@xterm/xterm/css/xterm.css" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <div class="sidebar-drag"></div>
+      <div class="sidebar-header">
+        <span>Terminals</span>
+        <button id="sort-toggle" class="sort-btn" title="Sort: manual order (drag to reorder). Click to put terminals that need attention on top."></button>
+      </div>
+      <ul id="terminal-list"></ul>
+      <div class="sidebar-footer">
+        <button id="new-terminal" class="new-btn" title="New terminal (⌘N) · Right-click or ⌘⇧N to pick a folder">
+          <span class="plus">+</span> New Terminal
+        </button>
+      </div>
+      <div id="sidebar-resizer"></div>
+    </aside>
+
+    <main id="main">
+      <div id="titlebar">
+        <button id="toggle-sidebar" class="icon-btn" title="Toggle sidebar (⌘⇧L)">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4">
+            <rect x="1.5" y="2.5" width="13" height="11" rx="2" />
+            <line x1="5.5" y1="2.5" x2="5.5" y2="13.5" />
+          </svg>
+        </button>
+        <div id="title-text">
+          <span id="title-name"></span>
+          <span id="title-cwd"></span>
+        </div>
+      </div>
+      <div id="terminals"></div>
+      <div id="empty-state">
+        <div class="empty-inner">
+          <div class="empty-title">No terminal open</div>
+          <div class="empty-sub">Press <kbd>⌘N</kbd> or click <strong>New Terminal</strong> to start.</div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="../../node_modules/@xterm/xterm/lib/xterm.js"></script>
+  <script src="../../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+  <script src="../../node_modules/@xterm/addon-web-links/lib/addon-web-links.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>
