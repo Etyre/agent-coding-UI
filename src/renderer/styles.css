@@ -181,6 +181,7 @@ html, body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+#terminal-list .name .emoji:not(:empty) { margin-right: 5px; }
 
 #terminal-list .sub {
   font-size: 11px;

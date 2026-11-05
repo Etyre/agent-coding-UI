@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld('api', {
   pickFolder: () => ipcRenderer.invoke('dialog:pickFolder'),
   confirm: (message, detail) => ipcRenderer.invoke('dialog:confirm', { message, detail }),
   defaultCwd: () => ipcRenderer.invoke('app:defaultCwd'),
+  suggestEmoji: (opts) => ipcRenderer.invoke('emoji:suggest', opts),
   openExternal: (url) => ipcRenderer.send('shell:openExternal', url),
   revealPath: (p) => ipcRenderer.send('shell:revealPath', p),
 

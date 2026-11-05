@@ -57,6 +57,16 @@ repo. The name follows along as you `cd`, until you rename the terminal by
 hand (⌘R), which pins it. Below the name is the program currently running,
 so a terminal running `claude` is labelled as such.
 
+Every project also gets an emoji in front of its name, in the sidebar and
+the title bar, so terminals are easy to tell apart at a glance. The first
+time a project is seen, the app asks Claude Code (headless, with the cheapest
+model and no tools) for an emoji that fits what the project is about, judging
+from its README, manifest and top-level files. A placeholder emoji shows
+until the answer arrives, a second or two later. The pick is remembered after
+that and kept distinct from the other projects' emojis. The app keeps the
+mapping in its own storage, so it is per machine; there is no UI to change it
+yet. If the `claude` command is not installed the placeholder simply stays.
+
 The icon in front of the name shows what the terminal is doing:
 
 - **nothing** – a shell sitting at its prompt

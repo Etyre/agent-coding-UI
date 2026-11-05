@@ -116,6 +116,85 @@
 
   window.addEventListener('focus', () => clearIfRead(byId(activeId)));
 
+  // ---------- Project emojis ----------
+  //
+  // Every project gets an emoji so terminals are easy to tell apart at a
+  // glance. The emoji is chosen to fit the project: the first time a project
+  // is seen, the main process asks Claude for one that matches the
+  // directory's README, manifest and files. Until that answer arrives (and
+  // for good if it never does) a placeholder from a fixed list is shown,
+  // picked by hashing the name so it is at least stable within a session.
+  // Only Claude's picks are remembered, so a project stuck with a placeholder
+  // is asked about again on the next launch. No two projects share an emoji
+  // while there are emojis left.
+
+  const PLACEHOLDER_EMOJIS = [
+    '🍎', '🍊', '🍋', '🍉', '🍇', '🍓', '🥝', '🥑', '🌽', '🥕', '🍄', '🌵',
+    '🌲', '🌻', '🌸', '🍀', '🐙', '🐸', '🦊', '🐼', '🦋', '🐝', '🐢', '🦀',
+    '🐳', '🦉', '🐧', '🦄', '🚀', '🛸', '🎈', '🎯', '🎲', '🎸', '🎨', '🧩',
+    '🔮', '💎', '🔑', '🧭', '⚓', '🪁', '🏀', '⚽', '🎪', '🧲', '🔔', '🪐',
+    '🌈', '⭐', '🔥', '🌊', '🧊', '🍩', '🧁', '🥨', '🍕', '🎁', '📦', '🧸',
+  ];
+  let emojiMap = {}; // project -> emoji chosen by Claude, persisted
+  try {
+    emojiMap = JSON.parse(localStorage.getItem('projectEmojiPicks') || '{}') || {};
+  } catch (_) {}
+  const placeholderEmojis = new Map(); // project -> placeholder, this session only
+  const emojiAsked = new Set(); // projects Claude has been asked about this session
+  let emojiQueue = Promise.resolve(); // one request at a time, so "taken" lists stay accurate
+
+  function hashString(str) {
+    let h = 2166136261;
+    for (let i = 0; i < str.length; i++) h = Math.imul(h ^ str.charCodeAt(i), 16777619);
+    return h >>> 0;
+  }
+
+  const takenEmojis = () => new Set([...Object.values(emojiMap), ...placeholderEmojis.values()]);
+
+  function placeholderFor(project) {
+    if (placeholderEmojis.has(project)) return placeholderEmojis.get(project);
+    const taken = takenEmojis();
+    let i = hashString(project) % PLACEHOLDER_EMOJIS.length;
+    for (let n = 0; n < PLACEHOLDER_EMOJIS.length && taken.has(PLACEHOLDER_EMOJIS[i]); n++) i = (i + 1) % PLACEHOLDER_EMOJIS.length;
+    placeholderEmojis.set(project, PLACEHOLDER_EMOJIS[i]);
+    return PLACEHOLDER_EMOJIS[i];
+  }
+
+  function requestEmoji(project, cwd) {
+    if (!cwd || emojiAsked.has(project)) return;
+    emojiAsked.add(project);
+    emojiQueue = emojiQueue
+      .then(async () => {
+        if (emojiMap[project]) return;
+        const taken = takenEmojis();
+        taken.delete(placeholderEmojis.get(project));
+        const emoji = await api.suggestEmoji({ cwd, project, taken: [...taken] });
+        if (!emoji || taken.has(emoji)) return; // keep the placeholder; try again next launch
+        emojiMap[project] = emoji;
+        placeholderEmojis.delete(project);
+        try {
+          localStorage.setItem('projectEmojiPicks', JSON.stringify(emojiMap));
+        } catch (_) {}
+        for (const s of terminals) {
+          if (projectKey(s) === project) renderItem(s);
+        }
+        updateTitle();
+      })
+      .catch(() => {});
+  }
+
+  const projectKey = (s) => s.project || s.name;
+
+  function emojiFor(s) {
+    const project = projectKey(s);
+    if (!project) return '';
+    if (emojiMap[project]) return emojiMap[project];
+    requestEmoji(project, s.cwd);
+    return placeholderFor(project);
+  }
+
+  const displayName = (s) => `${emojiFor(s)} ${s.name}`.trim();
+
   // ---------- Ordering ----------
 
   // Rank for "attention first": terminals that want you, then working ones,
@@ -223,6 +302,7 @@
       id,
       name: renamed && meta.name ? uniqueName(meta.name) : uniqueName(project || realCwd.split('/').filter(Boolean).pop() || realCwd),
       renamed, // true once the user picks a name by hand; auto-naming then stops
+      project: project || null, // repo / folder name, which also picks the emoji
       cwd: realCwd,
       process: info.process || shell,
       term,
@@ -318,6 +398,11 @@
     label.className = 'label';
     const name = document.createElement('div');
     name.className = 'name';
+    const emoji = document.createElement('span');
+    emoji.className = 'emoji';
+    const nameText = document.createElement('span');
+    nameText.className = 'name-text';
+    name.append(emoji, nameText);
     const sub = document.createElement('div');
     sub.className = 'sub';
     label.append(name, sub);
@@ -376,7 +461,8 @@
       moveTerminal(moved, target);
     });
 
-    s.nameEl = name;
+    s.nameEl = nameText;
+    s.emojiEl = emoji;
     s.subEl = sub;
     s.statusEl = dot;
     renderItem(s, li);
@@ -385,6 +471,7 @@
 
   function renderItem(s, li = s.li) {
     if (!li) return;
+    s.emojiEl.textContent = emojiFor(s);
     s.nameEl.textContent = s.name;
     const proc = s.process || '';
     let sub;
@@ -483,9 +570,9 @@
       document.title = 'Agent Coding';
       return;
     }
-    titleName.textContent = s.name;
+    titleName.textContent = displayName(s);
     titleCwd.textContent = prettyPath(s.cwd);
-    document.title = `${s.name} — Agent Coding`;
+    document.title = `${displayName(s)} — Agent Coding`;
   }
 
   new ResizeObserver(() => fitActive()).observe(container);
@@ -579,6 +666,7 @@
     const s = byId(id);
     if (!s) return;
     s.cwd = cwd;
+    if (project) s.project = project;
     if (!s.renamed && project) s.name = uniqueName(project, s);
     renderItem(s);
     if (id === activeId) updateTitle();
