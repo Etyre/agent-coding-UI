@@ -75,7 +75,9 @@ The icon in front of the name shows what the terminal is doing:
   you. The dot pulses and the name is bold until you have read the output:
   the terminal is selected, the window has focus, and you have scrolled to
   the end. Clicking a terminal that is already at the end clears it at once;
-  one you have scrolled up in keeps the dot until you reach the bottom.
+  one you have scrolled up in keeps the dot until you reach the bottom. A
+  program going quiet only earns the dot if some of its output arrived while
+  you were not looking; output you watched arrive is not news.
 - **hollow ring** – a program finished and dropped back to the shell while you
   were not looking.
 

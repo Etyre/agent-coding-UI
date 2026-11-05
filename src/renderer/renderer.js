@@ -97,6 +97,12 @@
   // its viewport is scrolled to the end of the output. The dot stays until all
   // three hold, so clicking a terminal and then reading down to the bottom is
   // what clears it, not the click alone.
+  //
+  // Going quiet only earns a dot if some of the output that led up to it was
+  // not seen (s.unread). Output the user watched arrive, followed by silence
+  // after they switched away, is not news. Repaints that programs with focus
+  // reporting make when the terminal loses focus do not count as output
+  // either (s.ignoreOutputUntil).
 
   const atBottom = (s) => {
     const b = s.term.buffer.active;
@@ -109,12 +115,26 @@
   }
 
   function clearIfRead(s) {
-    if (!s || !s.attention || !isRead(s)) return;
+    if (!s || !isRead(s)) return;
+    s.unread = false;
+    if (!s.attention) return;
     s.attention = false;
     renderItem(s);
   }
 
+  // Output that arrived while the user was not looking at it.
+  function noteUnread(s) {
+    if (isRead(s)) clearIfRead(s);
+    else if (Date.now() >= s.ignoreOutputUntil) s.unread = true;
+  }
+
   window.addEventListener('focus', () => clearIfRead(byId(activeId)));
+  // Losing window focus makes the active terminal's program repaint (see
+  // activate); that repaint is not something new to read.
+  window.addEventListener('blur', () => {
+    const s = byId(activeId);
+    if (s) s.ignoreOutputUntil = Date.now() + 600;
+  });
 
   // ---------- Project emojis ----------
   //
@@ -316,6 +336,7 @@
       //   waiting – a program went quiet (or rang the bell): it wants input
       state: 'idle',
       attention: false, // state changed while this terminal was in the background
+      unread: false, // output arrived that the user has not seen yet
       settleTimer: null,
       ignoreOutputUntil: 0,
     };
@@ -635,7 +656,7 @@
     clearTimeout(s.settleTimer);
     s.settleTimer = setTimeout(() => {
       if (!isProgram(s)) return setState(s, 'idle');
-      markAttention(s);
+      if (s.unread) markAttention(s);
       setState(s, 'waiting');
       renderItem(s);
     }, QUIET_MS);
@@ -644,7 +665,7 @@
   api.onPtyData((id, data) => {
     const s = byId(id);
     if (!s) return;
-    s.term.write(data, () => clearIfRead(s));
+    s.term.write(data, () => noteUnread(s));
     noteOutput(s);
   });
 
