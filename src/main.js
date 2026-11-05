@@ -360,8 +360,12 @@ function askClaude(prompt) {
   if (!bin) return Promise.resolve(null);
   return new Promise((resolve) => {
     const args = ['-p', '--model', 'haiku', '--tools', '', '--no-session-persistence', '--output-format', 'text', prompt];
-    const env = { ...process.env };
-    delete env.ELECTRON_RUN_AS_NODE;
+    const env = {};
+    for (const [k, v] of Object.entries(process.env)) {
+      // Never run as a child of a Claude session this app may have inherited (see pty-host.js).
+      if (k === 'ELECTRON_RUN_AS_NODE' || k === 'CLAUDECODE' || k.startsWith('CLAUDE_')) continue;
+      env[k] = v;
+    }
     let out = '';
     let child;
     try {

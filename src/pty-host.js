@@ -420,12 +420,26 @@ function sessionInfo(s) {
   };
 }
 
+// If this app was launched from inside a Claude Code session (say, by a Claude
+// "restart the app" command), it inherits that session's CLAUDECODE / CLAUDE_*
+// variables. Any `claude` started in our terminals would then run as a child of
+// that session and write no transcript of its own (and could not be resumed).
+// Terminals must always get a clean environment.
+function withoutClaudeSessionEnv(source) {
+  const env = {};
+  for (const [k, v] of Object.entries(source)) {
+    if (k === 'CLAUDECODE' || k.startsWith('CLAUDE_')) continue;
+    env[k] = v;
+  }
+  return env;
+}
+
 function createSession({ cwd, cols, rows, id: wantedId, meta, createdAt, seedScrollback, resumeClaude }) {
   // Restored terminals keep their old id so the UI's saved order still applies.
   const id = Number.isFinite(wantedId) && !sessions.has(wantedId) ? wantedId : nextId;
   nextId = Math.max(nextId, id + 1);
   const shellPath = process.env.SHELL || '/bin/zsh';
-  const env = { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor', LANG: process.env.LANG || 'en_US.UTF-8' };
+  const env = { ...withoutClaudeSessionEnv(process.env), TERM: 'xterm-256color', COLORTERM: 'truecolor', LANG: process.env.LANG || 'en_US.UTF-8' };
 
   const proc = pty.spawn(shellPath, ['-l'], {
     name: 'xterm-256color',
