@@ -6,6 +6,7 @@
   "scripts": {
     "start": "electron .",
     "rebuild": "electron-rebuild -f -w node-pty",
+    "test-emoji": "node src/emoji.js",
     "postinstall": "electron-rebuild -f -w node-pty",
     "package": "electron-packager . \"Agent Coding\" --platform=darwin --arch=arm64 --icon=build/icon.icns --out=dist --overwrite --ignore=\"^/dist\" --ignore=\"^/build/icon.iconset\" --ignore=\"^/build/render-icon.js\" && codesign --force --deep --sign - \"dist/Agent Coding-darwin-arm64/Agent Coding.app\"",
     "install_app": "npm run package && rm -rf \"/Applications/Agent Coding.app\" && cp -R \"dist/Agent Coding-darwin-arm64/Agent Coding.app\" /Applications/ && xattr -cr \"/Applications/Agent Coding.app\" && codesign --force --deep --sign - \"/Applications/Agent Coding.app\""

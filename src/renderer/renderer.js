@@ -1,4 +1,8 @@
 /* global Terminal, FitAddon, WebLinksAddon */
+// Agent Coding renderer: the page inside the Electron window (xterm.js
+// terminals, sidebar, title bar). It talks to the main process only through
+// window.api (src/preload.js). UI settings and drafts are kept in localStorage,
+// which Electron stores under ~/Library/Application Support/Agent Coding/.
 (() => {
   const api = window.api;
 
@@ -98,11 +102,21 @@
   // three hold, so clicking a terminal and then reading down to the bottom is
   // what clears it, not the click alone.
   //
-  // Going quiet only earns a dot if some of the output that led up to it was
-  // not seen (s.unread). Output the user watched arrive, followed by silence
-  // after they switched away, is not news. Repaints that programs with focus
-  // reporting make when the terminal loses focus do not count as output
-  // either (s.ignoreOutputUntil).
+  // Going quiet only earns a dot if the screen now shows something different
+  // from what the user last saw (s.seenScreen, the screen's text as of the
+  // last moment it was read). Output the user watched arrive, followed by
+  // silence after they switched away, is not news. Nor are repaints that leave
+  // the text as it was, such as the one programs with focus reporting make
+  // when the terminal loses focus; output during a window after such a known
+  // repaint trigger is ignored outright and counted as seen
+  // (s.ignoreOutputUntil).
+  //
+  // Claude Code also redraws the chrome at the bottom of its screen on its
+  // own schedule: the status row above the input box gains and loses notices
+  // (update results, the effort level), the box shows a suggested follow-up a
+  // few seconds after a reply, and the footer's key hints come and go. None
+  // of that is the conversation moving, so the comparison leaves the chrome
+  // out and looks only at the transcript above it.
 
   const atBottom = (s) => {
     const b = s.term.buffer.active;
@@ -110,22 +124,70 @@
   };
   const isRead = (s) => s.id === activeId && document.hasFocus() && atBottom(s);
 
+  // The text on screen, row by row. Claude Code repaints in place rather than
+  // scrolling, so this (not the scrollback length) is what tells output that
+  // changed something from output that merely redrew it.
+  function screenText(s) {
+    const b = s.term.buffer.active;
+    const rows = [];
+    for (let r = 0; r < s.term.rows; r++) {
+      const line = b.getLine(b.baseY + r);
+      rows.push(line ? line.translateToString(true).trimEnd() : '');
+    }
+    return rows;
+  }
+
+  // Claude Code's input box is drawn between two full-width rules near the
+  // bottom of the screen, with a status row above it and a footer below.
+  // Returns the index of the first of those chrome rows, or the row count
+  // when the screen has no such box (a shell, another program, a dialog).
+  const isRule = (row) => row.length >= 20 && (row.match(/─/g) || []).length >= row.length * 0.8;
+  function chromeTop(rows) {
+    const n = rows.length;
+    let bottom = -1;
+    for (let r = n - 1; r >= Math.max(0, n - 8); r--) {
+      if (isRule(rows[r])) {
+        bottom = r;
+        break;
+      }
+    }
+    if (bottom < 0) return n;
+    for (let r = bottom - 1; r >= Math.max(0, bottom - 12); r--) {
+      if (isRule(rows[r])) return Math.max(0, r - 1);
+    }
+    return n;
+  }
+
+  // Did the transcript change since the user last read this terminal? The
+  // chrome is taken from whichever screen has less of it, so a dialog that
+  // replaces the input box (which also draws rules) still counts as news.
+  function screenChanged(s) {
+    if (s.seenScreen === null) return true;
+    const now = screenText(s);
+    const top = Math.max(chromeTop(s.seenScreen), chromeTop(now));
+    for (let r = 0; r < top; r++) {
+      if ((now[r] || '') !== (s.seenScreen[r] || '')) return true;
+    }
+    return false;
+  }
+
   function markAttention(s) {
     if (!isRead(s)) s.attention = true;
   }
 
   function clearIfRead(s) {
     if (!s || !isRead(s)) return;
-    s.unread = false;
+    s.seenScreen = screenText(s);
     if (!s.attention) return;
     s.attention = false;
     renderItem(s);
   }
 
-  // Output that arrived while the user was not looking at it.
-  function noteUnread(s) {
+  // Some output was drawn: if the user is looking, that is what they have now
+  // seen; if it is a repaint we chose to ignore, count it as seen as well.
+  function noteDrawn(s) {
     if (isRead(s)) clearIfRead(s);
-    else if (Date.now() >= s.ignoreOutputUntil) s.unread = true;
+    else if (Date.now() < s.ignoreOutputUntil) s.seenScreen = screenText(s);
   }
 
   window.addEventListener('focus', () => clearIfRead(byId(activeId)));
@@ -336,7 +398,7 @@
       //   waiting – a program went quiet (or rang the bell): it wants input
       state: 'idle',
       attention: false, // state changed while this terminal was in the background
-      unread: false, // output arrived that the user has not seen yet
+      seenScreen: null, // screen text as of the last time the user read this terminal
       settleTimer: null,
       ignoreOutputUntil: 0,
     };
@@ -361,9 +423,17 @@
       }
     });
 
-    // Keep ⌘-shortcuts out of the terminal; the app menu handles them.
     term.attachCustomKeyEventHandler((e) => {
+      // Keep ⌘-shortcuts out of the terminal; the app menu handles them.
       if (e.metaKey && !e.ctrlKey && !e.altKey) return false;
+      // Shift+Enter inserts a newline instead of submitting. xterm.js would
+      // send a plain carriage return, indistinguishable from Enter, so send a
+      // line feed instead (what Ctrl+J sends): Claude Code's input box treats
+      // it as a newline, and a shell at its prompt treats it like Enter.
+      if (e.key === 'Enter' && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        if (e.type === 'keydown') api.writePty(id, '\n');
+        return false;
+      }
       return true;
     });
 
@@ -381,6 +451,10 @@
         } catch (_) {}
         api.resizePty(id, term.cols, term.rows, true);
         term.scrollToBottom();
+        // What was restored counts as seen, and so does the repaint the poke
+        // above is about to cause.
+        session.seenScreen = screenText(session);
+        session.ignoreOutputUntil = Date.now() + 1500;
       });
     }
     return session;
@@ -511,15 +585,35 @@
     s.statusEl.title = s.exited ? 'Exited' : s.state === 'running' ? 'Working' : s.attention ? 'Waiting for you: unread output' : '';
   }
 
+  // A rename in progress is a draft: it is saved to localStorage on every
+  // keystroke, keyed by terminal, and comes back if the UI reloads mid-edit.
+  // It is cleared only when the rename is committed or deliberately escaped.
+  const renameDraftKey = (s) => `renameDraft:${s.id}`;
+  const readRenameDraft = (s) => {
+    try {
+      return localStorage.getItem(renameDraftKey(s));
+    } catch (_) {
+      return null;
+    }
+  };
+  const writeRenameDraft = (s, v) => {
+    try {
+      if (v === null) localStorage.removeItem(renameDraftKey(s));
+      else localStorage.setItem(renameDraftKey(s), v);
+    } catch (_) {}
+  };
+
   function startRename(s) {
     if (!s.nameEl || s.nameEl.querySelector('input')) return;
     const input = document.createElement('input');
     input.className = 'name-input';
-    input.value = s.name;
+    const draft = readRenameDraft(s);
+    input.value = draft !== null ? draft : s.name;
     s.nameEl.textContent = '';
     s.nameEl.appendChild(input);
     input.focus();
     input.select();
+    input.addEventListener('input', () => writeRenameDraft(s, input.value));
 
     const finish = (commit) => {
       if (!input.isConnected) return;
@@ -529,6 +623,7 @@
         s.renamed = true;
         api.setPtyMeta(s.id, { name: v, renamed: true });
       }
+      writeRenameDraft(s, null);
       input.remove();
       renderItem(s);
       updateTitle();
@@ -656,7 +751,7 @@
     clearTimeout(s.settleTimer);
     s.settleTimer = setTimeout(() => {
       if (!isProgram(s)) return setState(s, 'idle');
-      if (s.unread) markAttention(s);
+      if (screenChanged(s)) markAttention(s);
       setState(s, 'waiting');
       renderItem(s);
     }, QUIET_MS);
@@ -665,7 +760,7 @@
   api.onPtyData((id, data) => {
     const s = byId(id);
     if (!s) return;
-    s.term.write(data, () => noteUnread(s));
+    s.term.write(data, () => noteDrawn(s));
     noteOutput(s);
   });
 

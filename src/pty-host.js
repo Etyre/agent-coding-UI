@@ -18,6 +18,10 @@
 // changed) the next host recreates the terminals from that snapshot and
 // resumes each Claude session with `claude --resume`. Only an explicit
 // "quit and close all terminals" discards the snapshot.
+//
+// Runtime files, all under ~/Library/Application Support/Agent Coding/:
+//   pty-host.sock (the socket, passed in as argv[2]), pty-host.log (this
+//   process's log, timestamped), pty-host-state/ (the snapshot).
 
 const net = require('net');
 const fs = require('fs');

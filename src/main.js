@@ -1,3 +1,15 @@
+// Agent Coding: a Typora-style Electron wrapper around terminal sessions for
+// running Claude Code. This is the Electron main process: it opens the window,
+// builds the app menu, and acts as the client of the long-lived terminal host
+// (src/pty-host.js) that owns the shells, so the UI can reload or relaunch
+// without killing them.
+//
+// Config/state: ~/Library/Application Support/Agent Coding/ (UI settings live in
+//   the renderer's localStorage there; the host's socket, snapshot and log sit
+//   next to it as pty-host.sock, pty-host-state/ and pty-host.log).
+// Log (this process and the emoji picker): ~/Library/Logs/agent-coding-ui.log.
+// Installed copy: /Applications/Agent Coding.app (npm run install_app).
+
 const { app, BrowserWindow, ipcMain, Menu, dialog, shell, nativeTheme, clipboard } = require('electron');
 const path = require('path');
 const os = require('os');
@@ -6,6 +18,7 @@ const net = require('net');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
 const { EventEmitter } = require('events');
+const { suggestEmoji } = require('./emoji');
 
 const DEFAULT_CWD = path.join(os.homedir(), 'Documents', 'agent-coding');
 const PTY_HOST_PATH = path.join(__dirname, 'pty-host.js');
@@ -277,129 +290,10 @@ ipcMain.on('shell:revealPath', (_event, p) => {
 
 // ---------- Project emojis ----------
 //
-// The UI labels every project with an emoji. Rather than picking one at
-// random, ask Claude Code (headless, cheapest model, no tools) for an emoji
-// that fits what the project is about, judging from its README, manifest and
-// top-level files. The UI shows a placeholder until the answer arrives and
-// keeps the placeholder if the `claude` CLI is missing or fails.
+// The one LLM call in the app lives in src/emoji.js (plain Node, also runnable
+// on its own as the test path). It returns null to keep the placeholder.
 
-function findRepoRoot(cwd) {
-  const home = os.homedir();
-  let dir = cwd;
-  while (dir && dir !== '/' && dir !== home) {
-    try {
-      fs.statSync(path.join(dir, '.git'));
-      return dir;
-    } catch (_) {}
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return null;
-}
-
-function readHead(file, maxChars) {
-  try {
-    return fs.readFileSync(file, 'utf8').slice(0, maxChars).trim();
-  } catch (_) {
-    return '';
-  }
-}
-
-// A short plain-text sketch of a directory: its name, what its manifest and
-// README say, and what files it holds.
-function describeDirectory(root) {
-  const parts = [`Directory name: ${path.basename(root)}`];
-  let entries = [];
-  try {
-    entries = fs.readdirSync(root).filter((e) => !e.startsWith('.')).sort();
-  } catch (_) {}
-  if (entries.length) parts.push(`Top-level files: ${entries.slice(0, 40).join(', ')}${entries.length > 40 ? ', …' : ''}`);
-  const manifests = ['package.json', 'Cargo.toml', 'pyproject.toml', 'go.mod', 'setup.py', 'Gemfile', 'composer.json'];
-  for (const m of manifests) {
-    const head = readHead(path.join(root, m), 600);
-    if (head) {
-      parts.push(`${m}:\n${head}`);
-      break;
-    }
-  }
-  const readme = entries.find((e) => /^readme(\.|$)/i.test(e));
-  if (readme) {
-    const head = readHead(path.join(root, readme), 1500);
-    if (head) parts.push(`${readme}:\n${head}`);
-  }
-  return parts.join('\n\n');
-}
-
-function findClaudeBinary() {
-  const candidates = [
-    path.join(os.homedir(), '.local', 'bin', 'claude'),
-    '/opt/homebrew/bin/claude',
-    '/usr/local/bin/claude',
-    ...(process.env.PATH || '').split(path.delimiter).filter(Boolean).map((d) => path.join(d, 'claude')),
-  ];
-  return candidates.find((c) => {
-    try {
-      fs.accessSync(c, fs.constants.X_OK);
-      return true;
-    } catch (_) {
-      return false;
-    }
-  });
-}
-
-// True for a single emoji (one grapheme cluster that is pictographic).
-function isSingleEmoji(str) {
-  if (!str || !/\p{Extended_Pictographic}/u.test(str)) return false;
-  const graphemes = [...new Intl.Segmenter('en', { granularity: 'grapheme' }).segment(str)];
-  return graphemes.length === 1;
-}
-
-function askClaude(prompt) {
-  const bin = findClaudeBinary();
-  if (!bin) return Promise.resolve(null);
-  return new Promise((resolve) => {
-    const args = ['-p', '--model', 'haiku', '--tools', '', '--no-session-persistence', '--output-format', 'text', prompt];
-    const env = {};
-    for (const [k, v] of Object.entries(process.env)) {
-      // Never run as a child of a Claude session this app may have inherited (see pty-host.js).
-      if (k === 'ELECTRON_RUN_AS_NODE' || k === 'CLAUDECODE' || k.startsWith('CLAUDE_')) continue;
-      env[k] = v;
-    }
-    let out = '';
-    let child;
-    try {
-      // Run from the temp dir so it never shows up as a session of the project itself.
-      child = spawn(bin, args, { cwd: os.tmpdir(), env, stdio: ['ignore', 'pipe', 'ignore'] });
-    } catch (_) {
-      return resolve(null);
-    }
-    const timer = setTimeout(() => child.kill(), 45000);
-    child.stdout.on('data', (b) => (out += b.toString('utf8')));
-    child.on('error', () => resolve(null));
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      resolve(code === 0 ? out : null);
-    });
-  });
-}
-
-ipcMain.handle('emoji:suggest', async (_event, { cwd, project, taken = [] } = {}) => {
-  const root = findRepoRoot(cwd) || cwd;
-  if (!root || !fs.existsSync(root)) return null;
-  const avoid = taken.filter(isSingleEmoji);
-  const prompt =
-    `Pick one emoji to serve as the icon for the software project "${project || path.basename(root)}", ` +
-    `so it is recognisable in a list of projects. Choose something that evokes what the project is about ` +
-    `(its subject, domain or purpose), not a generic symbol like a folder or a computer.` +
-    (avoid.length ? ` It must not be any of these, which are already in use: ${avoid.join(' ')}.` : '') +
-    `\n\nReply with exactly one emoji and nothing else.\n\n${describeDirectory(root)}`;
-  const reply = await askClaude(prompt);
-  if (!reply) return null;
-  const emoji = reply.trim().replace(/^[`'"\s]+|[`'"\s.]+$/g, '');
-  if (!isSingleEmoji(emoji) || avoid.includes(emoji)) return null;
-  return emoji;
-});
+ipcMain.handle('emoji:suggest', (_event, opts = {}) => suggestEmoji(opts));
 
 // ---------- Clipboard & dropped images ----------
 
