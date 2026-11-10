@@ -76,7 +76,9 @@ piped to `python3 ../shared/llm_contact.py check`. If the model reached for
 Eli with an `@ELI:` line, the message lands in the LLM inbox and the task
 stops: the placeholder stays and nothing is retried. `claude -p` takes no
 custom tools, so the `contact_eli` tool cannot be offered; the marker is the
-channel. All of this lives in `src/emoji.js`.
+channel. All of this lives in `src/emoji.js`. The shared confirm step
+(`llm_contact.py confirm`) is not needed here: it only questions a
+`contact_eli` tool call, and with no tool offered none can occur.
 
 The icon in front of the name shows what the terminal is doing:
 
