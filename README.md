@@ -163,6 +163,7 @@ is cleared when you press Enter or click away (both commit) or press Escape
 | `src/renderer/styles.css` | Styling, light and dark. |
 | `build/icon.svg` | Source of the app icon. |
 | `build/render-icon.js` | Renders `icon.svg` to `icon.png` with Electron (`npx electron build/render-icon.js`). |
+| `build/sign.sh` | Signs an app bundle with the keychain's code-signing certificate (ad hoc if there is none); `install_app` runs it on the copy in `/Applications`. |
 | `build/make-icns.sh` | Turns `icon.png` into `icon.iconset/` and `icon.icns` with `iconutil`. |
 | `build/icon.png`, `build/icon.icns`, `build/icon.iconset/` | Rendered icon artifacts, committed so a build needs no rendering step. |
 | `package.json` | Scripts (`start`, `rebuild`, `test-emoji`, `package`, `install_app`) and dependencies: Electron, node-pty, xterm.js and its fit/web-links addons, electron-packager and electron-rebuild. |
@@ -253,11 +254,30 @@ Restart Terminal Host (or accept the prompt on next launch).
   nothing else is affected.
 - The inbox check needs a Python 3.10+ `python3`: the shared venv
   (`~/Documents/agent-coding/shared/.venv`) or Homebrew. See Gotchas.
-- `/Applications/Agent Coding.app` is ad-hoc signed (`codesign --sign -`), so
-  there is nothing to configure in System Settings; if Gatekeeper complains
-  after a rebuild, `install_app` already strips quarantine with `xattr -cr`.
+- `/Applications/Agent Coding.app` is signed by `build/sign.sh` with the first
+  code-signing certificate in the keychain (the Apple Development one). It needs
+  no permission of its own, but everything run in its terminals is attributed to
+  it, so a command that takes a screenshot or drives another app asks for
+  **Screen Recording** / **Accessibility** / **Automation** under "Agent Coding"
+  in System Settings → Privacy & Security. Grant once; the grant survives
+  rebuilds. If a prompt keeps returning although Settings shows the app allowed,
+  the entry belongs to an older signature: `tccutil reset ScreenCapture
+  com.electron.agent-coding`, relaunch, and grant again.
 
 ## Gotchas learned
+
+- Until 2026-11-14 the app was ad-hoc signed. macOS files a privacy grant under
+  the app's designated requirement, which for an ad-hoc signature is the
+  binary's hash, so every `install_app` orphaned the grants: "Agent Coding would
+  like to record this computer's screen" kept appearing for any terminal command
+  that took a screenshot, although Settings listed the app as allowed. Signed
+  with a certificate the requirement is bundle id + certificate, which a rebuild
+  does not change. Check with `codesign -d -r- "/Applications/Agent Coding.app"`:
+  it should name the certificate, not a `cdhash`.
+- `codesign` cannot sign the bundle inside `dist/`: `~/Documents` is
+  iCloud-synced and re-adds `com.apple.FinderInfo` to the bundle the moment
+  `xattr -cr` removes it ("resource fork, Finder information, or similar
+  detritus not allowed"). Only the copy in `/Applications` is signed.
 
 - The installed app is a *copy* of the source tree. Editing `src/` changes
   nothing in `/Applications` until `npm run install_app`; ⌘⇧R / ⌘⌥R only
