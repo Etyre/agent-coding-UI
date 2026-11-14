@@ -313,6 +313,13 @@ Restart Terminal Host (or accept the prompt on next launch).
   constantly; the fix compares the transcript text above the input box with
   what was last read, and ignores output for a short window after a known
   repaint trigger.
+- Scrollback is raw terminal output, so it contains the questions programs
+  asked the terminal (Claude Code asks for the background colour and device
+  attributes at startup). Replaying it into xterm.js makes xterm answer them
+  again, and the answers went to whatever was now in the pty: after a restart
+  that is a bare shell, which printed `11;rgb:ffff/ffff/ffff1;2c` at its
+  prompt. The renderer drops everything xterm emits while a replay is being
+  written.
 - Programs with focus reporting redraw on blur; after reattaching a terminal
   the app pokes it with a resize so it repaints, and counts that repaint as
   already seen.

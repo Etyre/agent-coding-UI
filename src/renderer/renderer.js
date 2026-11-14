@@ -401,11 +401,17 @@
       seenScreen: null, // screen text as of the last time the user read this terminal
       settleTimer: null,
       ignoreOutputUntil: 0,
+      replaying: false, // true while saved scrollback is being written to xterm
     };
     terminals.push(session);
 
-    term.onData((data) => api.writePty(id, data));
-    term.onBinary((data) => api.writePty(id, data));
+    // While old scrollback is being replayed, xterm answers the queries in it
+    // (background colour, device attributes, cursor position) all over again.
+    // Those answers must not reach the pty: the program that asked is long
+    // past them, and a shell echoes them at its prompt as
+    // "11;rgb:ffff/ffff/ffff1;2c".
+    term.onData((data) => session.replaying || api.writePty(id, data));
+    term.onBinary((data) => session.replaying || api.writePty(id, data));
     term.onResize(({ cols, rows }) => api.resizePty(id, cols, rows));
     // Claude Code rings the bell when it finishes and wants you back.
     term.onBell(() => {
@@ -445,7 +451,9 @@
     if (scrollback) {
       // Replay what the host buffered, then poke the foreground program so a
       // full-screen app (like Claude Code) repaints itself for the new size.
+      session.replaying = true;
       term.write(scrollback, () => {
+        session.replaying = false;
         try {
           fit.fit();
         } catch (_) {}
