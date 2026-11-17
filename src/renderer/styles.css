@@ -5,7 +5,7 @@
   --text: #2b2b2b;
   --text-muted: #8a8a88;
   --hover: #ebebe9;
-  --active: #e1e1df;
+  --active: color-mix(in srgb, var(--accent) 13%, var(--sidebar-bg));
   --accent: #4a7cf7;
   --dot: #4a7cf7;
   --titlebar-h: 38px;
@@ -21,7 +21,7 @@
     --text: #d4d4d4;
     --text-muted: #8b8b8b;
     --hover: #2e2e2f;
-    --active: #37373a;
+    --active: color-mix(in srgb, var(--accent) 22%, var(--sidebar-bg));
     --accent: #6c9cff;
     --dot: #6c9cff;
   }
@@ -126,7 +126,23 @@ html, body {
 }
 
 #terminal-list li:hover { background: var(--hover); }
-#terminal-list li.active { background: var(--active); }
+
+/* The open terminal: an accent-tinted row with a bar down its left edge and
+   a bold name, so it stands apart from a merely hovered one. */
+#terminal-list li.active,
+#terminal-list li.active:hover { background: var(--active); }
+#terminal-list li.active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 5px;
+  bottom: 5px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+#terminal-list li.active .name { font-weight: 600; }
+#terminal-list li.active .sub { color: var(--text); opacity: 0.7; }
 
 /* Status icon: hidden for an idle shell or a program whose output has been
    read, a spinning ring while a program is working, a pulsing dot when it is
