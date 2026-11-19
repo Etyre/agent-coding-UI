@@ -42,7 +42,7 @@ in it (found through the per-process files Claude Code writes under
 reboot, a logout, a crash, or a host restart, the new host recreates each
 terminal from that snapshot: a fresh shell in the same folder, the old
 scrollback above a dim `[restored from …]` line, and, where Claude Code was
-running, `claude --resume <session>` typed for you so the conversation
+running, `claude --resume <session>` typed for you (once the UI has attached) so the conversation
 carries on where it left off. Other programs that were running are not
 restarted; the banner says what was there.
 
@@ -320,6 +320,14 @@ Restart Terminal Host (or accept the prompt on next launch).
   that is a bare shell, which printed `11;rgb:ffff/ffff/ffff1;2c` at its
   prompt. The renderer drops everything xterm emits while a replay is being
   written.
+- Dropping those answers had a side effect, found 2026-11-19: after a host
+  restart the host typed `claude --resume` before the UI had attached, so
+  Claude Code's own background-colour question was already in the scrollback
+  and its answer was dropped too. With no answer Claude Code assumes a dark
+  terminal: dark bars behind your messages and a near-black side panel on the
+  white window. The host now waits for the UI's first `list` request before
+  resuming Claude Code, so the question arrives live. A session already stuck
+  in dark colours stays that way until Claude Code is restarted in it.
 - Programs with focus reporting redraw on blur; after reattaching a terminal
   the app pokes it with a resize so it repaints, and counts that repaint as
   already seen.

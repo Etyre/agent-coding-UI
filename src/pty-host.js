@@ -365,15 +365,36 @@ function resumeClaudeIn(s, sessionId) {
     clearTimeout(quiet);
     clearTimeout(fallback);
     s.onShellOutput = null;
-    try {
-      s.pty.write(`${command}\r`);
-    } catch (_) {}
+    // Claude Code asks the terminal for its background colour as it starts and
+    // falls back to dark colours when nothing answers. Only the UI can answer,
+    // and it ignores questions that are already in the scrollback it replays,
+    // so wait until the UI has fetched the scrollback before starting it.
+    whenUiAttached(() => {
+      if (!sessions.has(s.id)) return;
+      try {
+        s.pty.write(`${command}\r`);
+      } catch (_) {}
+    });
   };
   s.onShellOutput = () => {
     clearTimeout(quiet);
     quiet = setTimeout(fire, 400);
   };
   const fallback = setTimeout(fire, 4000);
+}
+
+// Run fn once a UI has asked for the terminal list (straight away if one
+// already has). Everything a terminal prints after that reaches the UI live.
+let uiAttached = false;
+const uiWaiters = [];
+function whenUiAttached(fn) {
+  if (uiAttached) fn();
+  else uiWaiters.push(fn);
+}
+function noteUiAttached() {
+  if (uiAttached) return;
+  uiAttached = true;
+  for (const fn of uiWaiters.splice(0)) fn();
 }
 
 // ---------- sessions ----------
@@ -601,7 +622,9 @@ function handleMessage(client, msg) {
     case 'hello':
       return reply({ version: VERSION, startedAt: STARTED_AT, pid: process.pid, sessions: sessions.size, restored: restoredCount });
     case 'list':
-      return reply([...sessions.values()].map((x) => ({ ...sessionInfo(x), scrollback: x.chunks.join('') })));
+      reply([...sessions.values()].map((x) => ({ ...sessionInfo(x), scrollback: x.chunks.join('') })));
+      // After the reply is queued, so what the waiters cause is sent after it.
+      return noteUiAttached();
     case 'create': {
       const created = createSession(msg);
       return reply(sessionInfo(created));
