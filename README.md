@@ -78,7 +78,12 @@ stops: the placeholder stays and nothing is retried. `claude -p` takes no
 custom tools, so the `contact_eli` tool cannot be offered; the marker is the
 channel. All of this lives in `src/emoji.js`. The shared confirm step
 (`llm_contact.py confirm`) is not needed here: it only questions a
-`contact_eli` tool call, and with no tool offered none can occur.
+`contact_eli` tool call, and with no tool offered none can occur. The
+`note_to_eli` tool (added to the shared inbox 2026-11-20: leaves Eli a message
+without stopping the task) does not apply here for the same reason: `claude -p`
+takes no custom tools, a note has no text marker, and a one-emoji reply has no
+later turn to carry on into. The preamble's sentence about that tool says
+"some apps", so it stays accurate; `@ELI:` stops the task as before.
 
 The icon in front of the name shows what the terminal is doing:
 
